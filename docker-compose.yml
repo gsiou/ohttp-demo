@@ -13,6 +13,7 @@ services:
       - ./client/public:/app/public:rw
       - ./client/src:/app/src:rw
       - ./client/.env:/app/.env:ro
+      - ./client/index.html:/app/index.html:rw
       - type: tmpfs
         target: /app/node_modules/.vite
         tmpfs:
