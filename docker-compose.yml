@@ -1,0 +1,63 @@
+version: "3.9"
+
+services:
+  client:
+    build: ./client
+    ports:
+      - "4173:5173"
+    environment:
+      - VITE_RELAY_URL=http://localhost:4001
+    depends_on:
+      - relay
+    volumes:
+      - ./client/public:/app/public:rw
+      - ./client/src:/app/src:rw
+      - ./client/.env:/app/.env:ro
+      - type: tmpfs
+        target: /app/node_modules/.vite
+        tmpfs:
+          mode: 01777
+      - type: tmpfs
+        target: /app/node_modules/.vite-temp
+        tmpfs:
+          mode: 01777
+
+  relay:
+    build: ./relay
+    ports:
+      - "4001:3001"
+    environment:
+      - PORT=3001
+      - DOWNSTREAM_URL=http://gateway:3002
+      - ALLOWED_ORIGIN=http://localhost:4173
+    depends_on:
+      - gateway
+    volumes:
+      - ./relay:/app
+      - /app/node_modules
+    command: ["npm", "run", "dev"]
+
+  gateway:
+    build: ./gateway
+    ports:
+      - "4002:3002"
+    environment:
+      - PORT=3002
+      - DOWNSTREAM_URL=http://target:3003
+    depends_on:
+      - target
+    volumes:
+      - ./gateway:/app
+      - /app/node_modules
+    command: ["npm", "run", "dev"]
+
+  target:
+    build: ./target
+    ports:
+      - "4003:3003"
+    environment:
+      - PORT=3003
+    volumes:
+      - ./target:/app
+      - /app/node_modules
+    command: ["npm", "run", "dev"]
