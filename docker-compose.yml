@@ -36,6 +36,7 @@ services:
     volumes:
       - ./relay:/app
       - /app/node_modules
+      - ./relay/package.json:/app/package.json:rw
     command: ["npm", "run", "dev"]
 
   gateway:
@@ -50,6 +51,7 @@ services:
     volumes:
       - ./gateway:/app
       - /app/node_modules
+      - ./gateway/package.json:/app/package.json:rw
     command: ["npm", "run", "dev"]
 
   target:
@@ -61,4 +63,5 @@ services:
     volumes:
       - ./target:/app
       - /app/node_modules
+      - ./target/package.json:/app/package.json:rw
     command: ["npm", "run", "dev"]

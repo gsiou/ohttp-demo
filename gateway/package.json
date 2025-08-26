@@ -9,6 +9,8 @@
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts"
   },
   "dependencies": {
+    "@hpke/core": "^1.7.4",
+    "@hpke/dhkem-x25519": "^1.6.4",
     "axios": "^1.7.0",
     "cors": "^2.8.5",
     "express": "^4.19.2"

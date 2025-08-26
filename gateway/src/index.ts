@@ -1,6 +1,7 @@
 import express from 'express'
 import cors from 'cors'
 import axios from 'axios'
+import { generateX25519KeyPair } from './keys';
 
 const app = express()
 const PORT = Number(process.env.PORT) || 3002
@@ -35,6 +36,12 @@ app.get('/api/gateway', async (_req, res) => {
     })
   }
 })
+
+app.get('/api/testkeys', async(_req, _res) => {
+  const {publicKey, privateKey} = await generateX25519KeyPair();
+  console.log(publicKey);
+  return _res.status(200).send();
+});
 
 app.listen(PORT, () => {
   console.log(`[${new Date().toISOString()}] gateway (dev) listening on :${PORT} → downstream ${DOWNSTREAM_URL}`)
