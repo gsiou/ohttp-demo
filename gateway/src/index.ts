@@ -45,8 +45,8 @@ app.get('/.well-known/ohttp-gateway', async (_req, res) => {
     kemId: 0x0020,                 // X25519
     publicKey: publicKeyRaw,
     kdfAeadPairs: [
-      { kdfId: 0x0001, aeadId: 0x0003 }, // HKDF-SHA256 + ChaCha20-Poly1305
-      // { kdfId: 0x0001, aeadId: 0x0001 }, // AES-128-GCM
+      // { kdfId: 0x0001, aeadId: 0x0003 }, // HKDF-SHA256 + ChaCha20-Poly1305
+      { kdfId: 0x0001, aeadId: 0x0001 }, // AES-128-GCM
     ],
   });
 
