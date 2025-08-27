@@ -11,9 +11,12 @@
   "dependencies": {
     "@hpke/core": "^1.7.4",
     "@hpke/dhkem-x25519": "^1.6.4",
+    "@types/cors": "^2.8.19",
     "axios": "^1.7.0",
     "cors": "^2.8.5",
-    "express": "^4.19.2"
+    "express": "^4.19.2",
+    "install": "^0.13.0",
+    "npm": "^11.5.2"
   },
   "devDependencies": {
     "@types/express": "^4.17.21",

@@ -1,7 +1,7 @@
 import express from 'express'
 import cors from 'cors'
 import axios from 'axios'
-import { generateX25519KeyPair } from './keys';
+import { encodeKeyConfig, encodeOhttpKeys, generateX25519KeyPair } from './keys';
 
 const app = express()
 const PORT = Number(process.env.PORT) || 3002
@@ -37,10 +37,30 @@ app.get('/api/gateway', async (_req, res) => {
   }
 })
 
-app.get('/api/testkeys', async(_req, _res) => {
-  const {publicKey, privateKey} = await generateX25519KeyPair();
-  console.log(publicKey);
-  return _res.status(200).send();
+app.get('/.well-known/ohttp-gateway', async (_req, res) => {
+  const { publicKeyRaw } = await generateX25519KeyPair();
+
+  const keyConfig = encodeKeyConfig({
+    keyId: 0x01,
+    kemId: 0x0020,                 // X25519
+    publicKey: publicKeyRaw,
+    kdfAeadPairs: [
+      { kdfId: 0x0001, aeadId: 0x0003 }, // HKDF-SHA256 + ChaCha20-Poly1305
+      // { kdfId: 0x0001, aeadId: 0x0001 }, // AES-128-GCM
+    ],
+  });
+
+  const body = encodeOhttpKeys([keyConfig]);
+
+  res
+    .status(200)
+    .type('application/ohttp-keys')
+    .send(Buffer.from(body));
+});
+
+app.get('/api/testkeys', async (_req, res) => {
+  const { publicKeyRaw } = await generateX25519KeyPair();
+  res.json({ publicKeyHex: Buffer.from(publicKeyRaw).toString('hex') });
 });
 
 app.listen(PORT, () => {
