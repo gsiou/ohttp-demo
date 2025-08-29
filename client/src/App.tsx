@@ -13,11 +13,215 @@ const toHex = (u8?: Uint8Array | null) => u8 ? [...u8].map(b => b.toString(16).p
 const toArrayBuffer = (u8: Uint8Array) =>
   u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
 
+function encode1(val: number): Uint8Array {
+  if (val < 0 || val > 0xff) throw new Error("encode1: out of range");
+  return Uint8Array.of(val & 0xff);
+}
+
+function encode2(val: number): Uint8Array {
+  if (val < 0 || val > 0xffff) throw new Error("encode2: out of range");
+  return Uint8Array.of((val >>> 8) & 0xff, val & 0xff);
+}
+
+// concat multiple Uint8Arrays
+function concat(...parts: Uint8Array[]): Uint8Array {
+  const total = parts.reduce((n, a) => n + a.length, 0);
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const p of parts) { out.set(p, off); off += p.length; }
+  return out;
+}
+
+function encode_str(s: string): Uint8Array {
+  const utf8 = new TextEncoder().encode(s);
+  return concat(encode2(utf8.length), utf8);
+}
+
+// --- RFC 9292 / QUIC-style varint encoder (1/2/4/8 bytes) ---
+function encVarint(v: number | bigint): Uint8Array {
+  const n = typeof v === 'bigint' ? v : BigInt(v);
+  if (n < 0n) throw new Error("varint must be non-negative");
+  if (n <= 63n) {
+    // 00xxxxxx
+    return Uint8Array.of(Number(n & 0x3fn));
+  } else if (n <= 16383n) {
+    // 01xxxxxx (2 bytes)
+    const val = Number(n);
+    const b0 = 0x40 | ((val >>> 8) & 0x3f);
+    const b1 = val & 0xff;
+    return Uint8Array.of(b0, b1);
+  } else if (n <= 1073741823n) {
+    // 10xxxxxx (4 bytes)
+    const val = Number(n);
+    const b0 = 0x80 | ((val >>> 24) & 0x3f);
+    const b1 = (val >>> 16) & 0xff;
+    const b2 = (val >>> 8) & 0xff;
+    const b3 = val & 0xff;
+    return Uint8Array.of(b0, b1, b2, b3);
+  } else if (n <= 4611686018427387903n) {
+    // 11xxxxxx (8 bytes)
+    let x = n;
+    const out = new Uint8Array(8);
+    out[0] = 0xC0 | Number((x >> 56n) & 0x3fn);
+    out[1] = Number((x >> 48n) & 0xffn);
+    out[2] = Number((x >> 40n) & 0xffn);
+    out[3] = Number((x >> 32n) & 0xffn);
+    out[4] = Number((x >> 24n) & 0xffn);
+    out[5] = Number((x >> 16n) & 0xffn);
+    out[6] = Number((x >> 8n) & 0xffn);
+    out[7] = Number(x & 0xffn);
+    return out;
+  } else {
+    throw new Error("varint too large (max 2^62-1)");
+  }
+}
+
+function u8(s: string | Uint8Array): Uint8Array {
+  return typeof s === 'string' ? new TextEncoder().encode(s) : s;
+}
+
+// A single Field Line: NameLen(i), Name, ValueLen(i), Value
+function encFieldLine(name: string, value: string | Uint8Array): Uint8Array {
+  if (!name || /[A-Z]/.test(name))
+    throw new Error("field name must be lowercase and non-empty");
+  const n = u8(name);
+  const v = u8(value);
+  if (n.length < 1) throw new Error("field name must be at least 1 byte");
+  return concat(encVarint(n.length), n, encVarint(v.length), v);
+}
+
+// Known-Length Field Section:
+//   Length(i) = total bytes of concatenated Field Lines (no terminator)
+//   FieldLine...
+function encKnownFieldSection(headers: Array<[string, string | Uint8Array]>): Uint8Array {
+  const lines = headers.map(([k, v]) => encFieldLine(k, v));
+  const body = concat(...lines);
+  return concat(encVarint(body.length), body);
+}
+
+// Indeterminate-Length Field Section:
+//   FieldLine... ; then Content Terminator(i)=0
+function encIndetFieldSection(headers: Array<[string, string | Uint8Array]>): Uint8Array {
+  const lines = headers.map(([k, v]) => encFieldLine(k, v));
+  return concat(...lines, encVarint(0));
+}
+
+// Request Control Data:
+//   MethodLen(i), Method, SchemeLen(i), Scheme,
+//   AuthorityLen(i), Authority, PathLen(i), Path
+function encRequestControlData(
+  method: string,
+  scheme: string,
+  authority: string,   // can be ""
+  path: string         // e.g. "/foo?bar=baz"
+): Uint8Array {
+  const m = u8(method);
+  const s = u8(scheme);
+  const a = u8(authority); // may be length 0
+  const p = u8(path);
+  return concat(
+    encVarint(m.length), m,
+    encVarint(s.length), s,
+    encVarint(a.length), a,
+    encVarint(p.length), p
+  );
+}
+
+// --- Content encoders ---
+function encKnownContent(body?: Uint8Array): Uint8Array {
+  const b = body ?? new Uint8Array(0);
+  return concat(encVarint(b.length), b);
+}
+
+// Indeterminate content: ChunkLen(i)>0, Chunk..., ... , 0
+function encIndetContent(chunks: Uint8Array[]): Uint8Array {
+  const parts: Uint8Array[] = [];
+  for (const c of chunks) {
+    if (!c || c.length === 0) continue;  // skip empty
+    parts.push(encVarint(c.length), c);
+  }
+  parts.push(encVarint(0)); // terminator
+  return concat(...parts);
+}
+
+// --- Known-Length Request ---
+// FramingIndicator(i)=0, RequestControlData, Known-Length Header Section,
+// Known-Length Content, Known-Length Trailer Section, (optional) Padding(zeros)
+function encodeKnownLengthRequest(opts: {
+  method: string;
+  scheme: string;            // e.g. "https"
+  authority: string;         // host[:port], "" allowed
+  path: string;              // absolute-path + query, e.g. "/v1/check?x=1"
+  headers?: Array<[string, string | Uint8Array]>;
+  body?: Uint8Array;         // if undefined, length 0 (and trailers can be omitted per truncation rules)
+  trailers?: Array<[string, string | Uint8Array]>;
+  padBytes?: number;         // number of trailing zero bytes to add
+}): Uint8Array {
+  const framing = encVarint(0); // known-length request
+  const rcd = encRequestControlData(opts.method, opts.scheme, opts.authority, opts.path);
+
+  const hdrs = encKnownFieldSection(opts.headers ?? []);
+  const content = encKnownContent(opts.body);
+  const trls = encKnownFieldSection(opts.trailers ?? []);
+
+  // RFC 9292 allows truncating empty content+trailers instead of emitting explicit 0 lengths.
+  // if body and trailers are both empty, we can omit both sections entirely.
+  const emptyBody = !opts.body || opts.body.length === 0;
+  const emptyTrailers = !opts.trailers || opts.trailers.length === 0;
+
+  const parts: Uint8Array[] = [framing, rcd, hdrs];
+  if (!(emptyBody && emptyTrailers)) {
+    parts.push(content);
+    if (!emptyTrailers) parts.push(trls);
+    else {
+      // If trailers are empty but body present (possibly empty), still include zero-length trailers.
+      parts.push(encVarint(0)); // Known-Length Field Section with Length=0
+    }
+  }
+  if (opts.padBytes && opts.padBytes > 0) {
+    parts.push(new Uint8Array(opts.padBytes)); // zero padding
+  }
+  return concat(...parts);
+}
+
+// --- Indeterminate-Length Request ---
+// FramingIndicator(i)=2, RequestControlData, Indet Header Section,
+// Indet Content, Indet Trailer Section, (optional) Padding
+function encodeIndeterminateLengthRequest(opts: {
+  method: string;
+  scheme: string;
+  authority: string;
+  path: string;
+  headers?: Array<[string, string | Uint8Array]>;
+  bodyChunks?: Uint8Array[];   // zero or more chunks
+  trailers?: Array<[string, string | Uint8Array]>;
+  padBytes?: number;
+}): Uint8Array {
+  const framing = encVarint(2); // indeterminate-length request
+  const rcd = encRequestControlData(opts.method, opts.scheme, opts.authority, opts.path);
+
+  const hdrs = encIndetFieldSection(opts.headers ?? []);
+  const content = encIndetContent(opts.bodyChunks ?? []);
+  const trls = encIndetFieldSection(opts.trailers ?? []);
+
+  const parts: Uint8Array[] = [framing, rcd, hdrs, content, trls];
+  if (opts.padBytes && opts.padBytes > 0) parts.push(new Uint8Array(opts.padBytes));
+  return concat(...parts);
+}
+
+// --- Convenience: build headers from a JS object (lowercases keys) ---
+function headersFromObject(obj: Record<string, string | Uint8Array>): Array<[string, string | Uint8Array]> {
+  return Object.entries(obj).map(([k, v]) => [k.toLowerCase(), v]);
+}
+
+
 const parseOhttpKeys = (buf: ArrayBuffer): KeyConfig[] => {
   const dv = new DataView(buf)
   const out: KeyConfig[] = []
   let off = 0
+  console.log(dv);
   while (off + 2 <= dv.byteLength) {
+    console.log("off=", off);
     const cfgLen = dv.getUint16(off, false); off += 2
     if (off + cfgLen > dv.byteLength) break
     const base = off
@@ -26,8 +230,12 @@ const parseOhttpKeys = (buf: ArrayBuffer): KeyConfig[] => {
     const keyId = dv.getUint8(base + p); p += 1
     const kemId = dv.getUint16(base + p, false); p += 2
 
+    console.log("keyId=", keyId)
+    console.log("kemId=", kemId)
+
     // demo: support X25519 (0x0020) only
     const pubLen = kemId === 0x0020 ? 32 : (() => { throw new Error(`Unsupported KEM 0x${kemId.toString(16)}`) })()
+    // const pubLen = 32;
     const publicKey = new Uint8Array(buf, base + p, pubLen); p += pubLen
 
     const algsLen = dv.getUint16(base + p, false); p += 2
@@ -104,6 +312,7 @@ export default function App() {
     setHpkeOut(null)
     try {
       const res = await fetch(`${gatewayUrl}/.well-known/ohttp-gateway`, {
+      // const res = await fetch('https://localhost:4567/ohttp-keys', {
         headers: { Accept: 'application/ohttp-keys' },
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -126,11 +335,46 @@ export default function App() {
       const suite = buildSuite(kdfId, aeadId)
       const recip = await importGatewayPublicKey(suite, cfg.publicKey)
 
+      const hdr = concat(
+        encode1(cfg.keyId),
+        encode2(cfg.kemId),
+        encode2(kdfId),
+        encode2(aeadId)
+      );
+
+      console.log("hdr length =", hdr.length); // 7 bytes
+      console.log("hdr hex =", [...hdr].map(b => b.toString(16).padStart(2,'0')).join(''));
+
+      const info = concat(
+        encode_str("message/bhttp request"),
+        encode1(0), // single zero byte
+        hdr
+      );
+
+      console.log("info length =", info.length);
+      console.log("info hex =", [...info].map(b => b.toString(16).padStart(2,'0')).join(''));
+
       const sender = await suite.createSenderContext({
         recipientPublicKey: recip,
+        info: toArrayBuffer(info) as ArrayBuffer
       })
 
       const ct = await sender.seal(new TextEncoder().encode("Hello world!").buffer);
+
+      const body = new TextEncoder().encode('{"x":1}');
+
+      const req = encodeKnownLengthRequest({
+        method: "POST",
+        scheme: "https",
+        authority: "example.com",
+        path: "/echo",
+        headers: headersFromObject({
+          "content-type": "application/json",
+        }),
+        body,                 // <— known-length body
+        // trailers: []       // trailers are known-length too; zero-length is encoded as 0
+      });
+      console.log(toHex(req));
 
       setHpkeOut({ ciphertext: ct });
 
