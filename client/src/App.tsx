@@ -311,8 +311,8 @@ export default function App() {
     setKeysInfo(null)
     setHpkeOut(null)
     try {
-      const res = await fetch(`${gatewayUrl}/.well-known/ohttp-gateway`, {
-      // const res = await fetch('https://localhost:4567/ohttp-keys', {
+      // const res = await fetch(`${gatewayUrl}/.well-known/ohttp-gateway`, {
+      const res = await fetch('https://localhost:4567/ohttp-keys', {
         headers: { Accept: 'application/ohttp-keys' },
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -360,6 +360,7 @@ export default function App() {
       })
 
       const ct = await sender.seal(new TextEncoder().encode("Hello world!").buffer);
+      const ephemeralPublic = sender.enc;
 
       const body = new TextEncoder().encode('{"x":1}');
 
@@ -375,6 +376,25 @@ export default function App() {
         // trailers: []       // trailers are known-length too; zero-length is encoded as 0
       });
       console.log(toHex(req));
+
+      const encapsulatedRequest = concat(
+        encode1(cfg.keyId),
+        encode2(cfg.kemId),
+        encode2(kdfId),
+        encode2(aeadId),
+        new Uint8Array(ephemeralPublic)
+      )
+
+      const res2 = await fetch(`${relayUrl}/api/relay`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'message/ohttp-req' },
+        body: toArrayBuffer(encapsulatedRequest) as ArrayBuffer,
+      });
+
+
+      // Handle response (ciphertext of the Encapsulated Response)
+      if (!res2.ok) throw new Error(`Relay HTTP ${res2.status}`);
+
 
       setHpkeOut({ ciphertext: ct });
 
