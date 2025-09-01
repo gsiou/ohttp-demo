@@ -18,13 +18,12 @@ app.get('/health', (_req, res) => {
 app.use('/api/relay', createProxyMiddleware({
     // target: `${DOWNSTREAM_URL}/api/gateway`,
     target: 'https://host.docker.internal:4567/gateway-echo',
-    changeOrigin: true,          // sets Host to target host
+    changeOrigin: true,
     secure: false,
-    xfwd: true,                  // adds X-Forwarded-* headers
-    ws: true,                    // proxy websockets if needed
-    pathRewrite: { "/api/relay/": "" }, // /proxy/foo -> /foo
+    xfwd: true,
+    ws: true,
+    pathRewrite: { "/api/relay/": "" },
     onProxyReq(proxyReq, req, res) {
-      // e.g., add custom headers
       proxyReq.setHeader("X-From-Proxy", "Express");
     },
     onError(err, req, res) {
