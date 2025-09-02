@@ -32,11 +32,6 @@ function concat(...parts: Uint8Array[]): Uint8Array {
   return out;
 }
 
-function encode_str(s: string): Uint8Array {
-  const utf8 = new TextEncoder().encode(s);
-  return concat(encode2(utf8.length), utf8);
-}
-
 // --- RFC 9292 / QUIC-style varint encoder (1/2/4/8 bytes) ---
 function encVarint(v: number | bigint): Uint8Array {
   const n = typeof v === 'bigint' ? v : BigInt(v);
@@ -346,7 +341,7 @@ export default function App() {
       console.log("hdr hex =", [...hdr].map(b => b.toString(16).padStart(2,'0')).join(''));
 
       const info = concat(
-        encode_str("message/bhttp request"),
+        new TextEncoder().encode("message/bhttp request"),
         encode1(0), // single zero byte
         hdr
       );
@@ -359,7 +354,7 @@ export default function App() {
         info: toArrayBuffer(info) as ArrayBuffer
       })
 
-      const ct = await sender.seal(new TextEncoder().encode("Hello world!").buffer);
+      // const ct = await sender.seal(new TextEncoder().encode("Hello world!").buffer);
       const ephemeralPublic = sender.enc;
 
       const body = new TextEncoder().encode('{"x":1}');
@@ -376,13 +371,15 @@ export default function App() {
         // trailers: []       // trailers are known-length too; zero-length is encoded as 0
       });
       console.log(toHex(req));
+      const ct2 = await sender.seal(toArrayBuffer(req) as ArrayBuffer);
 
       const encapsulatedRequest = concat(
         encode1(cfg.keyId),
         encode2(cfg.kemId),
         encode2(kdfId),
         encode2(aeadId),
-        new Uint8Array(ephemeralPublic)
+        new Uint8Array(ephemeralPublic),
+        new Uint8Array(ct2)
       )
 
       const res2 = await fetch(`${relayUrl}/api/relay`, {
@@ -391,12 +388,19 @@ export default function App() {
         body: toArrayBuffer(encapsulatedRequest) as ArrayBuffer,
       });
 
+      console.log("Info");
+      console.log(toHex(info));
+
+      console.log("Encapsulated request");
+      console.log(toHex(encapsulatedRequest));
 
       // Handle response (ciphertext of the Encapsulated Response)
       if (!res2.ok) throw new Error(`Relay HTTP ${res2.status}`);
 
 
-      setHpkeOut({ ciphertext: ct });
+  
+
+      setHpkeOut({ ciphertext: ct2 });
 
     } catch (e: any) {
       setError(e.message || 'Unknown error while fetching/parsing keys')
