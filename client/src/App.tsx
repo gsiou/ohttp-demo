@@ -221,6 +221,144 @@ function headersFromObject(obj: Record<string, string | Uint8Array>): Array<[str
   return Object.entries(obj).map(([k, v]) => [k.toLowerCase(), v]);
 }
 
+const td = new TextDecoder();
+
+function decVarint(u8: Uint8Array, off: number): [number, number] {
+  if (off >= u8.length) throw new Error("varint: truncated");
+  const b0 = u8[off];
+  const tag = b0 >>> 6; // 0,1,2,3 -> 1,2,4,8 bytes
+  const size = [1, 2, 4, 8][tag];
+  if (off + size > u8.length) throw new Error("varint: truncated");
+
+  if (size === 1) return [b0 & 0x3f, off + 1];
+  if (size === 2) {
+    const v = ((b0 & 0x3f) << 8) | u8[off + 1];
+    return [v >>> 0, off + 2];
+  }
+  if (size === 4) {
+    const v = ((b0 & 0x3f) * 2 ** 24) | (u8[off + 1] << 16) | (u8[off + 2] << 8) | u8[off + 3];
+    return [v >>> 0, off + 4]; // max 2^30-1
+  }
+  // size === 8 -> use BigInt then downcast safely
+  let v = (BigInt(b0 & 0x3f) << 56n)
+        | (BigInt(u8[off + 1]) << 48n)
+        | (BigInt(u8[off + 2]) << 40n)
+        | (BigInt(u8[off + 3]) << 32n)
+        | (BigInt(u8[off + 4]) << 24n)
+        | (BigInt(u8[off + 5]) << 16n)
+        | (BigInt(u8[off + 6]) << 8n)
+        | BigInt(u8[off + 7]);
+  const max = BigInt(Number.MAX_SAFE_INTEGER);
+  if (v > max) throw new Error("varint too large for JS number");
+  return [Number(v), off + 8];
+}
+
+function decLenBytes(u8: Uint8Array, off: number): [Uint8Array, number] {
+  const [len, off2] = decVarint(u8, off);
+  const end = off2 + len;
+  if (end > u8.length) throw new Error("len-bytes: truncated");
+  return [u8.subarray(off2, end), end];
+}
+
+function decAscii(u8: Uint8Array): string {
+  return td.decode(u8);
+}
+
+type Header = [string, string];
+
+function decFieldLine(u8: Uint8Array, off: number): [{ name: string; value: Uint8Array }, number] {
+  const [nameBytes, o1] = decLenBytes(u8, off);
+  if (nameBytes.length < 1) throw new Error("field name must be at least 1 byte");
+  const name = decAscii(nameBytes);
+  if (/[A-Z]/.test(name)) throw new Error("field name must be lowercase");
+  const [valBytes, o2] = decLenBytes(u8, o1);
+  return [{ name, value: valBytes }, o2];
+}
+
+function decKnownFieldSection(u8: Uint8Array, off: number): { headers: Header[]; off: number } {
+  const [sectionLen, o1] = decVarint(u8, off);
+  const end = o1 + sectionLen;
+  if (end > u8.length) throw new Error("field section truncated");
+
+  const headers: Header[] = [];
+  let p = o1;
+  while (p < end) {
+    const [{ name, value }, p2] = decFieldLine(u8, p);
+    headers.push([name, decAscii(value)]);
+    p = p2;
+  }
+  if (p !== end) throw new Error("field section length mismatch");
+  return { headers, off: end };
+}
+
+function decRequestControlData(u8: Uint8Array, off: number) {
+  const [mBytes, o1] = decLenBytes(u8, off);
+  const [sBytes, o2] = decLenBytes(u8, o1);
+  const [aBytes, o3] = decLenBytes(u8, o2);
+  const [pBytes, o4] = decLenBytes(u8, o3);
+  return {
+    method: decAscii(mBytes),
+    scheme: decAscii(sBytes),
+    authority: decAscii(aBytes),
+    path: decAscii(pBytes),
+    off: o4,
+  };
+}
+
+export function decodeKnownLengthRequest(buf: Uint8Array) {
+  let off = 0;
+
+  // Framing Indicator (must be 0 for Known-Length Request)
+  const [fi, o0] = decVarint(buf, off);
+  if (fi !== 0) throw new Error(`unexpected framing indicator ${fi} (want 0)`);
+  off = o0;
+
+  // Request Control Data
+  const r = decRequestControlData(buf, off);
+  off = r.off;
+
+  // Header Section (Known-Length)
+  const { headers, off: oHdr } = decKnownFieldSection(buf, off);
+  off = oHdr;
+
+  // Per RFC 9292, if both content & trailers are empty, they MAY be omitted.
+  // Otherwise: Known-Length Content, then Known-Length Trailer Section.
+  let body = buf.subarray(0, 0);
+  let trailers: Header[] = [];
+
+  if (off < buf.length) {
+    // Known-Length Content
+    const [contentLen, oC1] = decVarint(buf, off);
+    const cEnd = oC1 + contentLen;
+    if (cEnd > buf.length) throw new Error("content truncated");
+    body = buf.subarray(oC1, cEnd);
+    off = cEnd;
+
+    // Known-Length Trailer Section (often length=0)
+    const { headers: trls, off: oTr } = decKnownFieldSection(buf, off);
+    trailers = trls;
+    off = oTr;
+  }
+
+  // Optional padding: trailing zero bytes only
+  let padBytes = 0;
+  while (off < buf.length) {
+    if (buf[off] !== 0x00) throw new Error("non-zero bytes after end of message");
+    padBytes++; off++;
+  }
+
+  return {
+    method: r.method,
+    scheme: r.scheme,
+    authority: r.authority,
+    path: r.path,
+    headers,
+    body,        // Uint8Array
+    trailers,    // Header[]
+    padBytes,    // number of zero padding bytes seen
+  };
+}
+
 
 const parseOhttpKeys = (buf: ArrayBuffer): KeyConfig[] => {
   const dv = new DataView(buf)
@@ -484,6 +622,8 @@ export default function App() {
       console.log("BHTTP:")
       console.log(toHex(plaintextBhttp));
 
+      const decodedRequest = decodeKnownLengthRequest(plaintextBhttp);
+      console.log(decodedRequest);
       setHpkeOut({ ciphertext: ct2 });
 
     } catch (e: any) {
