@@ -10,8 +10,20 @@ type KeyConfig = { keyId: number; kemId: number; publicKey: Uint8Array; pairs: K
 
 const toHex = (u8?: Uint8Array | null) => u8 ? [...u8].map(b => b.toString(16).padStart(2, '0')).join('') : ''
 
-const toArrayBuffer = (u8: Uint8Array) =>
-  u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
+const toArrayBuffer = (u8: Uint8Array) => {
+  if (
+    u8.byteOffset === 0 &&
+    u8.buffer instanceof ArrayBuffer &&
+    u8.buffer.byteLength === u8.byteLength
+  ) {
+    return u8.buffer; // exact ArrayBuffer
+  }
+  // otherwise, copy into a fresh ArrayBuffer (so that it always returns ArrayBuffer)
+  const ab = new ArrayBuffer(u8.byteLength);
+  new Uint8Array(ab).set(u8);
+  return ab;
+}
+  // u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
 
 function encode1(val: number): Uint8Array {
   if (val < 0 || val > 0xff) throw new Error("encode1: out of range");
@@ -301,6 +313,67 @@ export default function App() {
     }
   }
 
+  // Derive `len` bytes using HKDF-SHA256 with arbitrary salt
+  // Avoid hpke lib because of weird salt size limitation
+  async function hkdfExpandWebCrypto(
+    ikm: ArrayBuffer,            // HPKE-exported `secret`
+    salt: Uint8Array,            // enc || response_nonce
+    infoLabel: string,           // "key" or "nonce"
+    len: number                  // bytes to derive
+  ): Promise<Uint8Array> {
+    const baseKey = await crypto.subtle.importKey("raw", ikm, "HKDF", false, ["deriveBits"]);
+    const info = new TextEncoder().encode(infoLabel);
+    const bits = await crypto.subtle.deriveBits(
+      { name: "HKDF", hash: "SHA-256", salt: toArrayBuffer(salt), info },
+      baseKey,
+      len * 8
+    );
+    return new Uint8Array(bits);
+  }
+
+
+  async function decryptEncapsulatedResponse(
+    suite: CipherSuite,
+    sender: any,                     // HPKE sender context
+    encFromRequest: ArrayBuffer,     // enc
+    encResponseBuf: ArrayBuffer      // bytes from relay's HTTP body
+  ): Promise<Uint8Array> {
+    // TODO: unhardcode these
+    const Nk = 16; // key bytes
+    const Nn = 12; // nonce bytes
+    const L  = Math.max(Nk, Nn);
+
+    const encU8   = new Uint8Array(encFromRequest);
+    const respU8  = new Uint8Array(encResponseBuf);
+    if (respU8.length < L) throw new Error("ohttp-res too short");
+
+    const responseNonce = respU8.slice(0, L);
+    const ct            = respU8.slice(L);
+
+    // RFC 9458 §4.4 step 1: exporter secret
+    const exporterCtx = new TextEncoder().encode("message/bhttp response");
+    const secret = await sender.export(exporterCtx, L); // length = max(Nn, Nk)
+
+    // RFC 9458 §4.4 steps 3–5: HKDF( salt=enc||responseNonce )
+    const kdf : any = (suite as any).kdf;
+    const salt = concat(encU8, responseNonce);
+    // const prk  = await kdf.extract(toArrayBuffer(salt), secret);
+    // const aeadKey   = await kdf.expand(prk, new TextEncoder().encode("key"),   Nk);
+    // const aeadNonce = await kdf.expand(prk, new TextEncoder().encode("nonce"), Nn);
+    const aeadKey   = await hkdfExpandWebCrypto(secret, salt, "key",   Nk);
+    const aeadNonce = await hkdfExpandWebCrypto(secret, salt, "nonce", Nn);
+
+
+    const aeadCtx = (suite as any).aead.createEncryptionContext(toArrayBuffer(aeadKey));
+    const pt = await aeadCtx.open(
+      toArrayBuffer(aeadNonce),        // nonce
+      toArrayBuffer(ct),               // ciphertext+tag
+      new ArrayBuffer(0)      // AAD
+    );
+
+    return new Uint8Array(pt);
+  }
+
   const fetchKeyConfig = async () => {
     setError(null)
     setKeysInfo(null)
@@ -397,8 +470,19 @@ export default function App() {
       // Handle response (ciphertext of the Encapsulated Response)
       if (!res2.ok) throw new Error(`Relay HTTP ${res2.status}`);
 
-
+      const responseBuffer = await res2.arrayBuffer()
+      console.log("Response");
+      console.log(toHex(new Uint8Array(responseBuffer)));
   
+      const plaintextBhttp = await decryptEncapsulatedResponse(
+        suite,
+        sender,
+        ephemeralPublic,
+        responseBuffer
+      );
+
+      console.log("BHTTP:")
+      console.log(toHex(plaintextBhttp));
 
       setHpkeOut({ ciphertext: ct2 });
 
