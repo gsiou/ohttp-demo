@@ -314,3 +314,63 @@ export function decodeKnownLengthRequest(buf: Uint8Array) {
     padBytes,    // number of zero padding bytes seen
   };
 }
+
+// Response Control Data: status code (varint)
+export function decResponseControlData(u8: Uint8Array, off: number): [number, number] {
+  const [status, o1] = decVarint(u8, off);
+  if (status < 100 || status > 599) throw new Error(`invalid status ${status}`);
+  return [status, o1];
+}
+
+export function decodeKnownLengthResponse(buf: Uint8Array) {
+  let off = 0;
+
+  // 1) Framing Indicator must be 1 (Known-Length Response)
+  const [fi, o0] = decVarint(buf, off);
+  if (fi !== 1) throw new Error(`unexpected framing indicator ${fi} (want 1)`);
+  off = o0;
+
+  // 2) Zero or more informational responses (1xx), each followed by a header section
+  const infos: Array<{ status: number; headers: [string, string][] }> = [];
+  while (true) {
+    const [status, o1] = decResponseControlData(buf, off);
+    off = o1;
+    if (status >= 200) {
+      // final status → break with `status` already read
+      var finalStatus = status;
+      break;
+    }
+    const { headers, off: oHdr } = decKnownFieldSection(buf, off);
+    infos.push({ status, headers });
+    off = oHdr;
+  }
+
+  // 3) Final header section
+  const { headers, off: oHdr2 } = decKnownFieldSection(buf, off);
+  off = oHdr2;
+
+  // 4) Content (known-length) + 5) Trailers (known-length) — both MAY be omitted
+  let body = buf.subarray(0, 0);        // TS-friendly empty slice
+  let trailers: [string, string][] = [];
+
+  if (off < buf.length) {
+    const [contentLen, oC1] = decVarint(buf, off);
+    const cEnd = oC1 + contentLen;
+    if (cEnd > buf.length) throw new Error("content truncated");
+    body = buf.subarray(oC1, cEnd);
+    off = cEnd;
+
+    const { headers: trls, off: oTr } = decKnownFieldSection(buf, off);
+    trailers = trls;
+    off = oTr;
+  }
+
+  // 6) Optional zero padding
+  let padBytes = 0;
+  while (off < buf.length) {
+    if (buf[off] !== 0x00) throw new Error("non-zero bytes after end of message");
+    padBytes++; off++;
+  }
+
+  return { status: finalStatus, infos, headers, body, trailers, padBytes };
+}

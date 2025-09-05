@@ -1,7 +1,7 @@
 import React, { useState } from 'react'
 import { CipherSuite, HkdfSha256, Aes128Gcm } from '@hpke/core'
 import { DhkemX25519HkdfSha256 } from '@hpke/dhkem-x25519'
-import { decodeKnownLengthRequest, encodeKnownLengthRequest, headersFromObject } from './lib/bhttp'
+import { decodeKnownLengthRequest, decodeKnownLengthResponse, encodeKnownLengthRequest, headersFromObject } from './lib/bhttp'
 import { concat, encode1, encode2, toArrayBuffer, toHex } from './lib/util'
 
 const relayUrl = import.meta.env.VITE_RELAY_URL || 'http://localhost:4001'
@@ -37,7 +37,7 @@ const parseOhttpKeys = (buf: ArrayBuffer): KeyConfig[] => {
     if (algsLen % 4 !== 0) throw new Error('Bad algs length')
     const pairs: KdfAead[] = []
     for (let i = 0; i < algsLen; i += 4) {
-      const kdfId  = dv.getUint16(base + p + i + 0, false)
+      const kdfId = dv.getUint16(base + p + i + 0, false)
       const aeadId = dv.getUint16(base + p + i + 2, false)
       pairs.push({ kdfId, aeadId })
     }
@@ -51,8 +51,8 @@ const parseOhttpKeys = (buf: ArrayBuffer): KeyConfig[] => {
 const buildSuite = (kdfId: number, aeadId: number) => {
   // demo: KDF must be HKDF-SHA256 (0x0001) for our helper
   if (kdfId !== 0x0001) throw new Error(`Unsupported KDF 0x${kdfId.toString(16)} in demo`)
-  const kem  = new DhkemX25519HkdfSha256()
-  const kdf  = new HkdfSha256()
+  const kem = new DhkemX25519HkdfSha256()
+  const kdf = new HkdfSha256()
   if (aeadId !== 0x0001) throw new Error(`Unsupported AEAD 0x${aeadId.toString(16)} in demo`)
   const aead = new Aes128Gcm()
   return new CipherSuite({ kem, kdf, aead })
@@ -129,26 +129,26 @@ export default function App() {
     // TODO: unhardcode these
     const Nk = 16; // key bytes
     const Nn = 12; // nonce bytes
-    const L  = Math.max(Nk, Nn);
+    const L = Math.max(Nk, Nn);
 
-    const encU8   = new Uint8Array(encFromRequest);
-    const respU8  = new Uint8Array(encResponseBuf);
+    const encU8 = new Uint8Array(encFromRequest);
+    const respU8 = new Uint8Array(encResponseBuf);
     if (respU8.length < L) throw new Error("ohttp-res too short");
 
     const responseNonce = respU8.slice(0, L);
-    const ct            = respU8.slice(L);
+    const ct = respU8.slice(L);
 
     // RFC 9458 §4.4 step 1: exporter secret
     const exporterCtx = new TextEncoder().encode("message/bhttp response");
     const secret = await sender.export(exporterCtx, L); // length = max(Nn, Nk)
 
     // RFC 9458 §4.4 steps 3–5: HKDF( salt=enc||responseNonce )
-    const kdf : any = (suite as any).kdf;
+    const kdf: any = (suite as any).kdf;
     const salt = concat(encU8, responseNonce);
     // const prk  = await kdf.extract(toArrayBuffer(salt), secret);
     // const aeadKey   = await kdf.expand(prk, new TextEncoder().encode("key"),   Nk);
     // const aeadNonce = await kdf.expand(prk, new TextEncoder().encode("nonce"), Nn);
-    const aeadKey   = await hkdfExpandWebCrypto(secret, salt, "key",   Nk);
+    const aeadKey = await hkdfExpandWebCrypto(secret, salt, "key", Nk);
     const aeadNonce = await hkdfExpandWebCrypto(secret, salt, "nonce", Nn);
 
 
@@ -166,6 +166,8 @@ export default function App() {
     setError(null)
     setKeysInfo(null)
     setHpkeOut(null)
+    let cfgs;
+    let cfg;
     try {
       // const res = await fetch(`${gatewayUrl}/.well-known/ohttp-gateway`, {
       const res = await fetch('https://localhost:4567/ohttp-keys', {
@@ -174,94 +176,99 @@ export default function App() {
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const buf = await res.arrayBuffer()
 
-      const cfgs = parseOhttpKeys(buf)
-      if (!cfgs.length) throw new Error('No key configs found')
-      const cfg = cfgs[0]
-      if (!cfg.pairs.length) throw new Error('No symmetric alg pairs in config')
-      const { kdfId, aeadId } = cfg.pairs[0] // demo: first pair
+      cfgs = parseOhttpKeys(buf)
+    } catch (e: any) {
+      setError(e.message || 'Unknown error while fetching/parsing keys')
+      console.log(e);
+    }
 
-      setKeysInfo({
-        keyId: cfg.keyId,
-        kemId: cfg.kemId,
-        kdfId,
-        aeadId,
-        pubHex: toHex(cfg.publicKey),
-      })
+    if (!cfgs || !cfgs.length) throw new Error('No key configs found')
+    cfg = cfgs[0]
+    if (!cfg.pairs.length) throw new Error('No symmetric alg pairs in config')
 
-      const suite = buildSuite(kdfId, aeadId)
-      const recip = await importGatewayPublicKey(suite, cfg.publicKey)
+    const { kdfId, aeadId } = cfg.pairs[0] // demo: first pair
+    setKeysInfo({
+      keyId: cfg.keyId,
+      kemId: cfg.kemId,
+      kdfId,
+      aeadId,
+      pubHex: toHex(cfg.publicKey),
+    })
 
-      const hdr = concat(
-        encode1(cfg.keyId),
-        encode2(cfg.kemId),
-        encode2(kdfId),
-        encode2(aeadId)
-      );
+    const suite = buildSuite(kdfId, aeadId)
+    const recip = await importGatewayPublicKey(suite, cfg.publicKey)
 
-      console.log("hdr length =", hdr.length); // 7 bytes
-      console.log("hdr hex =", [...hdr].map(b => b.toString(16).padStart(2,'0')).join(''));
+    const hdr = concat(
+      encode1(cfg.keyId),
+      encode2(cfg.kemId),
+      encode2(kdfId),
+      encode2(aeadId)
+    );
 
-      const info = concat(
-        new TextEncoder().encode("message/bhttp request"),
-        encode1(0), // single zero byte
-        hdr
-      );
+    console.log("hdr length =", hdr.length); // 7 bytes
+    console.log("hdr hex =", [...hdr].map(b => b.toString(16).padStart(2, '0')).join(''));
 
-      console.log("info length =", info.length);
-      console.log("info hex =", [...info].map(b => b.toString(16).padStart(2,'0')).join(''));
+    const info = concat(
+      new TextEncoder().encode("message/bhttp request"),
+      encode1(0), // single zero byte
+      hdr
+    );
 
-      const sender = await suite.createSenderContext({
-        recipientPublicKey: recip,
-        info: toArrayBuffer(info) as ArrayBuffer
-      })
+    console.log("info length =", info.length);
+    console.log("info hex =", [...info].map(b => b.toString(16).padStart(2, '0')).join(''));
 
-      // const ct = await sender.seal(new TextEncoder().encode("Hello world!").buffer);
-      const ephemeralPublic = sender.enc;
+    const sender = await suite.createSenderContext({
+      recipientPublicKey: recip,
+      info: toArrayBuffer(info) as ArrayBuffer
+    })
 
-      const body = new TextEncoder().encode('{"x":1}');
+    // const ct = await sender.seal(new TextEncoder().encode("Hello world!").buffer);
+    const ephemeralPublic = sender.enc;
 
-      const req = encodeKnownLengthRequest({
-        method: "POST",
-        scheme: "https",
-        authority: "example.com",
-        path: "/echo",
-        headers: headersFromObject({
-          "content-type": "application/json",
-        }),
-        body,                 // <— known-length body
-        // trailers: []       // trailers are known-length too; zero-length is encoded as 0
-      });
-      console.log(toHex(req));
-      const ct2 = await sender.seal(toArrayBuffer(req) as ArrayBuffer);
+    const body = new TextEncoder().encode('{"x":1}');
 
-      const encapsulatedRequest = concat(
-        encode1(cfg.keyId),
-        encode2(cfg.kemId),
-        encode2(kdfId),
-        encode2(aeadId),
-        new Uint8Array(ephemeralPublic),
-        new Uint8Array(ct2)
-      )
+    const req = encodeKnownLengthRequest({
+      method: "POST",
+      scheme: "https",
+      authority: "example.com",
+      path: "/echo",
+      headers: headersFromObject({
+        "content-type": "application/json",
+      }),
+      body,                 // <— known-length body
+      // trailers: []       // trailers are known-length too; zero-length is encoded as 0
+    });
+    console.log(toHex(req));
+    const ct2 = await sender.seal(toArrayBuffer(req) as ArrayBuffer);
 
-      const res2 = await fetch(`${relayUrl}/api/relay`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'message/ohttp-req' },
-        body: toArrayBuffer(encapsulatedRequest) as ArrayBuffer,
-      });
+    const encapsulatedRequest = concat(
+      encode1(cfg.keyId),
+      encode2(cfg.kemId),
+      encode2(kdfId),
+      encode2(aeadId),
+      new Uint8Array(ephemeralPublic),
+      new Uint8Array(ct2)
+    )
 
-      console.log("Info");
-      console.log(toHex(info));
+    const res2 = await fetch(`${relayUrl}/api/relay`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'message/ohttp-req' },
+      body: toArrayBuffer(encapsulatedRequest) as ArrayBuffer,
+    });
 
-      console.log("Encapsulated request");
-      console.log(toHex(encapsulatedRequest));
+    console.log("Info");
+    console.log(toHex(info));
 
-      // Handle response (ciphertext of the Encapsulated Response)
-      if (!res2.ok) throw new Error(`Relay HTTP ${res2.status}`);
+    console.log("Encapsulated request");
+    console.log(toHex(encapsulatedRequest));
 
-      const responseBuffer = await res2.arrayBuffer()
-      console.log("Response");
-      console.log(toHex(new Uint8Array(responseBuffer)));
-  
+    // Handle response (ciphertext of the Encapsulated Response)
+    if (!res2.ok) throw new Error(`Relay HTTP ${res2.status}`);
+
+    const responseBuffer = await res2.arrayBuffer()
+    console.log("Response");
+    console.log(toHex(new Uint8Array(responseBuffer)));
+
       const plaintextBhttp = await decryptEncapsulatedResponse(
         suite,
         sender,
@@ -269,17 +276,12 @@ export default function App() {
         responseBuffer
       );
 
-      console.log("BHTTP:")
-      console.log(toHex(plaintextBhttp));
+    console.log("BHTTP:")
+    console.log(toHex(plaintextBhttp));
 
-      const decodedRequest = decodeKnownLengthRequest(plaintextBhttp);
-      console.log(decodedRequest);
-      setHpkeOut({ ciphertext: ct2 });
-
-    } catch (e: any) {
-      setError(e.message || 'Unknown error while fetching/parsing keys')
-      console.log(e);
-    }
+    const decodedRequest = decodeKnownLengthResponse(plaintextBhttp);
+    console.log(decodedRequest);
+    setHpkeOut({ ciphertext: ct2 });
   }
 
   return (
@@ -305,9 +307,9 @@ export default function App() {
           <h3>Parsed Key Config (demo picks first)</h3>
           <ul>
             <li>Key ID: <code>{keysInfo.keyId}</code></li>
-            <li>KEM ID: <code>0x{(keysInfo.kemId ?? 0).toString(16).padStart(4,'0')}</code> (expect 0x0020 for X25519)</li>
-            <li>KDF ID: <code>0x{(keysInfo.kdfId ?? 0).toString(16).padStart(4,'0')}</code></li>
-            <li>AEAD ID: <code>0x{(keysInfo.aeadId ?? 0).toString(16).padStart(4,'0')}</code></li>
+            <li>KEM ID: <code>0x{(keysInfo.kemId ?? 0).toString(16).padStart(4, '0')}</code> (expect 0x0020 for X25519)</li>
+            <li>KDF ID: <code>0x{(keysInfo.kdfId ?? 0).toString(16).padStart(4, '0')}</code></li>
+            <li>AEAD ID: <code>0x{(keysInfo.aeadId ?? 0).toString(16).padStart(4, '0')}</code></li>
             <li>Public Key (hex, first 16 bytes): <code>{keysInfo.pubHex?.slice(0, 32)}…</code></li>
           </ul>
         </div>
