@@ -7,6 +7,7 @@ services:
       - "4173:5173"
     environment:
       - VITE_RELAY_URL=http://localhost:4001
+      - VITE_GATEWAY_URL=http://localhost:4002
     depends_on:
       - relay
     volumes:
@@ -24,20 +25,13 @@ services:
           mode: 01777
 
   relay:
-    build: ./relay
+    build: ./nginx
     ports:
-      - "4001:3001"
-    environment:
-      - PORT=3001
-      - DOWNSTREAM_URL=http://gateway:3002
-      - ALLOWED_ORIGIN=http://localhost:4173
+      - "4001:80"
     depends_on:
       - gateway
-    volumes:
-      - ./relay:/app
-      - /app/node_modules
-      - ./relay/package.json:/app/package.json:rw
-    command: ["npm", "run", "dev"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   gateway:
     build: ./gateway
@@ -49,8 +43,7 @@ services:
     depends_on:
       - target
     volumes:
-      - ./gateway:/app
-      - /app/node_modules
+      - ./gateway/src:/app/src
       - ./gateway/package.json:/app/package.json:rw
     command: ["npm", "run", "dev"]
 
@@ -61,7 +54,6 @@ services:
     environment:
       - PORT=3003
     volumes:
-      - ./target:/app
-      - /app/node_modules
+      - ./target/src:/app/src
       - ./target/package.json:/app/package.json:rw
     command: ["npm", "run", "dev"]
