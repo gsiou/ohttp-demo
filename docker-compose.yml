@@ -30,29 +30,30 @@ services:
       - "4001:80"
     depends_on:
       - gateway
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
 
   gateway:
-    build: ./gateway
+    build:
+      context: ./privacy-gateway-server-go
+      dockerfile: Dockerfile
     ports:
-      - "4002:3002"
+      - "4567:4567"
     environment:
-      - PORT=3002
-      - DOWNSTREAM_URL=http://target:3003
+      - LOG_FORMAT=json
+      - LOG_LEVEL=DEBUG
+      - PORT=4567
+      - SEED_SECRET_KEY=869663da4842c8cd5bca96047dd7dd09ff88a9907fd17c9fd585fa219ee987de
     depends_on:
       - target
-    volumes:
-      - ./gateway/src:/app/src
-      - ./gateway/package.json:/app/package.json:rw
-    command: ["npm", "run", "dev"]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:4567/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
 
   target:
     build: ./target
-    ports:
-      - "4003:3003"
     environment:
-      - PORT=3003
+      - PORT=4003
     volumes:
       - ./target/src:/app/src
       - ./target/package.json:/app/package.json:rw
