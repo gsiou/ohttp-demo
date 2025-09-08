@@ -1,0 +1,3 @@
+[submodule "privacy-gateway-server-go"]
+	path = privacy-gateway-server-go
+	url = https://github.com/gsiou/privacy-gateway-server-go.git

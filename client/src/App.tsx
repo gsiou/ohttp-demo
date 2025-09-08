@@ -170,7 +170,7 @@ export default function App() {
     let cfg;
     try {
       // const res = await fetch(`${gatewayUrl}/.well-known/ohttp-gateway`, {
-      const res = await fetch('https://localhost:4567/ohttp-keys', {
+      const res = await fetch('http://localhost:4567/ohttp-keys', {
         headers: { Accept: 'application/ohttp-keys' },
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -228,10 +228,10 @@ export default function App() {
     const body = new TextEncoder().encode('{"x":1}');
 
     const req = encodeKnownLengthRequest({
-      method: "POST",
-      scheme: "https",
-      authority: "example.com",
-      path: "/echo",
+      method: "GET",
+      scheme: "http",
+      authority: "target:4003",
+      path: "/api/target",
       headers: headersFromObject({
         "content-type": "application/json",
       }),
@@ -239,6 +239,8 @@ export default function App() {
       // trailers: []       // trailers are known-length too; zero-length is encoded as 0
     });
     console.log(toHex(req));
+    console.log("BHTTP Request");
+    console.log(decodeKnownLengthRequest(req));
     const ct2 = await sender.seal(toArrayBuffer(req) as ArrayBuffer);
 
     const encapsulatedRequest = concat(
