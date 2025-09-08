@@ -85,22 +85,6 @@ export default function App() {
     ciphertext?: ArrayBuffer
   } | null>(null)
 
-  const callChain = async () => {
-    setLoading(true)
-    setError(null)
-    setData(null)
-    try {
-      const res = await fetch(`${relayUrl}/api/relay`)
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const json = await res.json()
-      setData(json)
-    } catch (e: any) {
-      setError(e.message || 'Unknown error')
-    } finally {
-      setLoading(false)
-    }
-  }
-
   // Derive `len` bytes using HKDF-SHA256 with arbitrary salt
   // Avoid hpke lib because of weird salt size limitation
   async function hkdfExpandWebCrypto(
@@ -290,9 +274,6 @@ export default function App() {
     <div style={{ fontFamily: 'system-ui, Arial, sans-serif', padding: 24 }}>
       <h1>Client → Relay → Gateway → Target</h1>
       <p>Relay URL: <code>{relayUrl}</code></p>
-      <button onClick={callChain} disabled={loading} style={{ padding: '8px 12px' }}>
-        {loading ? 'Calling…' : 'Call the chain'}
-      </button>
 
       <div style={{ height: 16 }} />
 
