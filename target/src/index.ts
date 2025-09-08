@@ -5,6 +5,23 @@ const app = express()
 const PORT = Number(process.env.PORT) || 3003
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '*'
 
+// Global middleware to log request info
+app.use((req, res, next) => {
+  const start = Date.now()
+  console.log(
+    `[${new Date().toISOString()}] ${req.method} ${req.originalUrl} from ${req.ip}`
+  )
+
+  res.on('finish', () => {
+    const duration = Date.now() - start
+    console.log(
+      `↳ ${res.statusCode} (${duration}ms)`
+    )
+  })
+
+  next()
+})
+
 app.use(cors({ origin: ALLOWED_ORIGIN }))
 app.use(express.json())
 
