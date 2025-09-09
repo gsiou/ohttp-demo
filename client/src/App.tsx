@@ -79,6 +79,7 @@ export default function App() {
     kemId?: number
     kdfId?: number
     aeadId?: number
+    publicKey?: Uint8Array
     pubHex?: string
   } | null>(null)
 
@@ -178,15 +179,32 @@ export default function App() {
       kemId: cfg.kemId,
       kdfId,
       aeadId,
+      publicKey: cfg.publicKey,
       pubHex: toHex(cfg.publicKey),
     })
+  }
 
+  const encryptedHttpRequest = async () => {
+    if (!keysInfo) {
+      console.log("Keys Info is unset")
+      return
+    }
+    const {keyId, kemId, kdfId, aeadId, publicKey, pubHex} = keysInfo;
+    if (keyId === undefined || 
+        kemId === undefined || 
+        kdfId === undefined ||
+        aeadId === undefined ||
+        publicKey === undefined || 
+        pubHex === undefined) {
+      console.log("Missing field from keysInfo")
+      return
+    }
     const suite = buildSuite(kdfId, aeadId)
-    const recip = await importGatewayPublicKey(suite, cfg.publicKey)
+    const recip = await importGatewayPublicKey(suite, publicKey)
 
     const hdr = concat(
-      encode1(cfg.keyId),
-      encode2(cfg.kemId),
+      encode1(keyId),
+      encode2(kemId),
       encode2(kdfId),
       encode2(aeadId)
     );
@@ -230,8 +248,8 @@ export default function App() {
     const ct2 = await sender.seal(toArrayBuffer(req) as ArrayBuffer);
 
     const encapsulatedRequest = concat(
-      encode1(cfg.keyId),
-      encode2(cfg.kemId),
+      encode1(keyId),
+      encode2(kemId),
       encode2(kdfId),
       encode2(aeadId),
       new Uint8Array(ephemeralPublic),
@@ -271,7 +289,7 @@ export default function App() {
     console.log(decodedResponse);
     const bodyText = new TextDecoder().decode(decodedResponse.body);
     console.log(bodyText);
-    setHpkeOut({ ciphertext: ct2 });
+    setHpkeOut({ ciphertext: ct2, enc: ephemeralPublic });
     setStatus(decodedResponse.status);
     setBody(bodyText);
   }
@@ -283,7 +301,6 @@ export default function App() {
 
       <div style={{ height: 16 }} />
 
-      <p>Gateway URL: <code>{gatewayUrl}</code></p>
       <button onClick={fetchKeyConfig} style={{ padding: '8px 12px' }}>
         Fetch Keys &amp; HPKE (demo)
       </button>
@@ -301,6 +318,9 @@ export default function App() {
             <li>AEAD ID: <code>0x{(keysInfo.aeadId ?? 0).toString(16).padStart(4, '0')}</code></li>
             <li>Public Key (hex, first 16 bytes): <code>{keysInfo.pubHex?.slice(0, 32)}…</code></li>
           </ul>
+          <button onClick={encryptedHttpRequest}>
+            Request
+          </button>
         </div>
       )}
 
