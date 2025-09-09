@@ -71,6 +71,8 @@ export default function App() {
   const [data, setData] = useState<any>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
+  const [body, setBody] = useState<string>("")
+  const [status, setStatus] = useState<number>(0)
 
   const [keysInfo, setKeysInfo] = useState<{
     keyId?: number
@@ -265,9 +267,13 @@ export default function App() {
     console.log("BHTTP:")
     console.log(toHex(plaintextBhttp));
 
-    const decodedRequest = decodeKnownLengthResponse(plaintextBhttp);
-    console.log(decodedRequest);
+    const decodedResponse = decodeKnownLengthResponse(plaintextBhttp);
+    console.log(decodedResponse);
+    const bodyText = new TextDecoder().decode(decodedResponse.body);
+    console.log(bodyText);
     setHpkeOut({ ciphertext: ct2 });
+    setStatus(decodedResponse.status);
+    setBody(bodyText);
   }
 
   return (
@@ -308,6 +314,15 @@ export default function App() {
           <div>ciphertext:</div>
           <pre style={{ background: '#f7f7f7', padding: 12, borderRadius: 8, wordBreak: 'break-all' }}>
             {hpkeOut.ciphertext && toHex(new Uint8Array(hpkeOut.ciphertext))}
+          </pre>
+          <h3>Response</h3>
+          <h4>Status</h4>
+          <pre style={{ background: '#f7f7f7', padding: 12, borderRadius: 8, wordBreak: 'break-all' }}>
+            {status}
+          </pre>
+          <h4>Text</h4>
+          <pre style={{ background: '#f7f7f7', padding: 12, borderRadius: 8, wordBreak: 'break-all' }}>
+            {body}
           </pre>
         </div>
       )}
